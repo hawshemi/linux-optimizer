@@ -157,20 +157,30 @@ EOF
             # Clean up the temporary file
             rm -f $tmp_keyring
 
-            ## Add the XanMod repository
-            echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' | sudo tee /etc/apt/sources.list.d/xanmod-release.list
-            
-            ## Install XanMod
-            sudo apt update -q && sudo apt install "linux-xanmod-x64v$cpu_level" -y
+            ## Add the XanMod repository (suite is the distro codename, per xanmod.org)
+            local codename list=/etc/apt/sources.list.d/xanmod-release.list
+            codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+            echo "deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org $codename main" | sudo tee $list
 
-            ## Clean up
-            sudo apt update -q
-            sudo apt autoremove --purge -y
-            
-            echo 
-            green_msg "XanMod Kernel Installed. Reboot to Apply the new Kernel."
-            echo 
-            sleep 1
+            ## Install XanMod: x64v4 has no build (use v3); x64v1 and Debian oldstable only have LTS
+            local level=$(( cpu_level > 3 ? 3 : cpu_level ))
+            if sudo apt update -q && { sudo apt install -y "linux-xanmod-x64v$level" || sudo apt install -y "linux-xanmod-lts-x64v$level"; }; then
+                sudo apt autoremove --purge -y
+
+                echo 
+                green_msg "XanMod Kernel Installed. Reboot to Apply the new Kernel."
+                echo 
+                sleep 1
+            else
+                # Release not in the XanMod repo: drop it so later apt updates don't fail
+                sudo rm -f $list
+                sudo apt update -q
+
+                echo 
+                red_msg "XanMod is not available for '$codename'. Skipped. (Supported releases: xanmod.org)"
+                echo 
+                sleep 2
+            fi
         else
             echo 
             red_msg "Unsupported CPU. (Check the supported CPUs at xanmod.org)"
