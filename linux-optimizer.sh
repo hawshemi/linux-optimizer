@@ -33,7 +33,7 @@ DNS_PATH="/etc/resolv.conf"
 echo 
 green_msg '================================================================='
 green_msg 'This script will automatically Optimize your Linux Server.'
-green_msg 'Tested on: Ubuntu 20+, Debian 11+, CentOS stream 8+, AlmaLinux 8+, Fedora 37+'
+green_msg 'Tested on: Ubuntu 22.04+, Debian 12+, CentOS stream 8+, AlmaLinux 8+, Fedora 37+'
 green_msg 'Root access is required.' 
 green_msg 'Source is @ https://github.com/hawshemi/linux-optimizer' 
 green_msg '================================================================='
@@ -66,7 +66,7 @@ install_dependencies_debian_based() {
   sleep 0.5
   
   apt update -q
-  apt install -yq wget curl sudo jq
+  apt install -yq wget curl sudo
 
   echo
   green_msg 'Dependencies Installed.'
@@ -83,7 +83,7 @@ install_dependencies_rhel_based() {
   sleep 0.5
 
   # dnf up -y
-  dnf install -y wget curl sudo jq
+  dnf install -y wget curl sudo
   
   echo
   green_msg 'Dependencies Installed.'
@@ -143,42 +143,21 @@ set_timezone() {
     yellow_msg 'Setting TimeZone based on VPS IP address...'
     sleep 0.5
 
-    get_location_info() {
-        local ip_sources=("https://ipv4.icanhazip.com" "https://api.ipify.org" "https://ipv4.ident.me/")
-        local location_info
+    local source timezone=""
+    # HTTPS only: the answer is applied as root.
+    for source in "https://ipapi.co/timezone" "https://ipinfo.io/timezone"; do
+        timezone=$(curl -fsS --max-time 5 "$source" 2>/dev/null | tr -d '[:space:]')
+        # Accept only real tzdata names (e.g. Asia/Taipei); no dots, so no path traversal.
+        if [[ "$timezone" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ && -f "/usr/share/zoneinfo/$timezone" ]]; then
+            break
+        fi
+        timezone=""
+    done
 
-        for source in "${ip_sources[@]}"; do
-            local ip=$(curl -s "$source")
-            if [ -n "$ip" ]; then
-                location_info=$(curl -s "http://ip-api.com/json/$ip")
-                if [ -n "$location_info" ]; then
-                    echo "$location_info"
-                    return 0
-                fi
-            fi
-        done
-
-        red_msg "Error: Failed to fetch location information from known sources. Setting timezone to UTC."
-        sudo timedatectl set-timezone "UTC"
-        return 1
-    }
-
-    # Fetch location information from three sources
-    location_info_1=$(get_location_info)
-    location_info_2=$(get_location_info)
-    location_info_3=$(get_location_info)
-
-    # Extract timezones from the location information
-    timezones=($(echo "$location_info_1 $location_info_2 $location_info_3" | jq -r '.timezone'))
-
-    # Check if at least two timezones are equal
-    if [[ "${timezones[0]}" == "${timezones[1]}" || "${timezones[0]}" == "${timezones[2]}" || "${timezones[1]}" == "${timezones[2]}" ]]; then
-        # Set the timezone based on the first matching pair
-        timezone="${timezones[0]}"
-        sudo timedatectl set-timezone "$timezone"
+    if [[ -n "$timezone" ]] && sudo timedatectl set-timezone "$timezone"; then
         green_msg "Timezone set to $timezone"
     else
-        red_msg "Error: Failed to fetch consistent location information from known sources. Setting timezone to UTC."
+        red_msg "Error: Failed to get a valid timezone. Setting timezone to UTC."
         sudo timedatectl set-timezone "UTC"
     fi
 
@@ -233,10 +212,32 @@ else
 fi
 
 
+# Abort on EOL Ubuntu/Debian releases.
+check_eol() {
+    local eol="" col=eol min=22 major
+    . /etc/os-release
+    # Debian counts official LTS as supported; Ubuntu uses standard support.
+    [[ "$ID" == "debian" ]] && col="eol-lts" && min=12
+    # EOL date from distro-info-data when installed (column 3 is the codename).
+    if [[ -r "/usr/share/distro-info/$ID.csv" ]]; then
+        eol=$(awk -F, -v s="$VERSION_CODENAME" -v c="$col" 'NR==1{for(i=1;i<=NF;i++) if($i==c) k=i; next} $3==s{print $k}' "/usr/share/distro-info/$ID.csv")
+    fi
+    major=${VERSION_ID%%.*}
+    # shortcut: minimum versions are hardcoded (EOL as of 2026-11) for systems without distro-info-data, bump when Ubuntu 22.04 / Debian 12 reach EOL.
+    if [[ -n "$eol" && "$eol" < "$(date +%F)" ]] || (( ${major:-99} < min )); then
+        echo
+        red_msg "$PRETTY_NAME is End of Life${eol:+ (since $eol)}. Upgrade the OS first. Exiting."
+        echo
+        exit 1
+    fi
+}
+
+
 ## Run
 
 # Install dependencies
 if [[ "$OS" == "ubuntu" || "$OS" == "debian" ]]; then
+    check_eol
     install_dependencies_debian_based
 elif [[ "$OS" == "centos" || "$OS" == "fedora" || "$OS" == "almalinux" ]]; then
     install_dependencies_rhel_based
